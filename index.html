@@ -132,31 +132,25 @@ module.exports = async function handler(req, res) {
     try {
       const streamUrl = await getStream(q.id, q.s, q.e);
       // Serve the stream content directly
-      return fetchUpstream(streamUrl).then(upstream => {
-        const ct = (upstream.headers['content-type'] || '').toLowerCase();
-        const isM3u8 = ct.includes('mpegurl') || ct.includes('m3u8') || /\.m3u8?(\?|$)/i.test(streamUrl.split('?')[0]);
+      const upstream = await fetchUpstream(streamUrl);
+      const ct = (upstream.headers['content-type'] || '').toLowerCase();
+      const isM3u8 = ct.includes('mpegurl') || ct.includes('m3u8') || /\.m3u8?(\?|$)/i.test(streamUrl.split('?')[0]);
 
-        if (isM3u8) {
-          const chunks = [];
-          upstream.on('data', chunk => chunks.push(chunk));
-          upstream.on('end', () => {
-            const body = Buffer.concat(chunks).toString('utf8');
-            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-            res.end(rewriteM3u8(body, streamUrl));
-          });
-        } else {
-          res.setHeader('Content-Type', ct || 'application/octet-stream');
-          if (upstream.headers['content-length']) res.setHeader('Content-Length', upstream.headers['content-length']);
-          res.statusCode = upstream.statusCode;
-          upstream.pipe(res);
-        }
-      }).catch(err => {
-        res.statusCode = 502;
-        res.end(err.message);
-      });
+      if (isM3u8) {
+        const chunks = [];
+        for await (const chunk of upstream) chunks.push(chunk);
+        const body = Buffer.concat(chunks).toString('utf8');
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        return res.end(rewriteM3u8(body, streamUrl));
+      } else {
+        res.setHeader('Content-Type', ct || 'application/octet-stream');
+        if (upstream.headers['content-length']) res.setHeader('Content-Length', upstream.headers['content-length']);
+        res.statusCode = upstream.statusCode;
+        return upstream.pipe(res);
+      }
     } catch (err) {
-      res.statusCode = 500;
-      res.end(JSON.stringify({ error: err.message }));
+      res.statusCode = 502;
+      return res.end(err.message);
     }
   }
 
