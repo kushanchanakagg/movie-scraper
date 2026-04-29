@@ -5,11 +5,11 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124';
+const REFERER = 'https://vidlink.pro/';
+const ORIGIN  = 'https://vidlink.pro';
+const UA      = 'Mozilla/5.0 Chrome/124';
 
-// ─────────────────────────────────────────────
-// WASM BOOT
-// ─────────────────────────────────────────────
+// ── WASM BOOT ─────────────────────────────────────────────
 let bootPromise = null;
 
 function bootWasm() {
@@ -46,9 +46,7 @@ function bootWasm() {
   return bootPromise;
 }
 
-// ─────────────────────────────────────────────
-// STREAM TOKEN
-// ─────────────────────────────────────────────
+// ── GET STREAM ────────────────────────────────────────────
 async function getStream(id, season, episode) {
   await bootWasm();
 
@@ -61,9 +59,9 @@ async function getStream(id, season, episode) {
 
   const res = await fetch(apiUrl, {
     headers: {
-      'User-Agent': UA,
-      Referer: 'https://vidlink.pro/',
-      Origin: 'https://vidlink.pro'
+      Referer: REFERER,
+      Origin: ORIGIN,
+      'User-Agent': UA
     }
   });
 
@@ -71,34 +69,18 @@ async function getStream(id, season, episode) {
   return data?.stream?.playlist;
 }
 
-// ─────────────────────────────────────────────
-// EXTRACT HEADERS FROM URL (?headers=...)
-// ─────────────────────────────────────────────
-function extractHeaders(url) {
-  try {
-    const u = new URL(url);
-    const h = u.searchParams.get('headers');
-    return h ? JSON.parse(decodeURIComponent(h)) : {};
-  } catch {
-    return {};
-  }
-}
-
-// ─────────────────────────────────────────────
-// FETCH WITH HEADER SUPPORT
-// ─────────────────────────────────────────────
+// ── FETCH ────────────────────────────────────────────────
 function fetchUpstream(url, redirects = 0) {
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject('Too many redirects');
 
     const client = url.startsWith('https') ? https : http;
-    const custom = extractHeaders(url);
 
     const req = client.get(url, {
       headers: {
-        'User-Agent': UA,
-        Referer: custom.referer || custom.origin || '',
-        Origin: custom.origin || ''
+        Referer: REFERER,
+        Origin: ORIGIN,
+        'User-Agent': UA
       }
     }, res => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
@@ -112,9 +94,7 @@ function fetchUpstream(url, redirects = 0) {
   });
 }
 
-// ─────────────────────────────────────────────
-// SAFE M3U8 REWRITE
-// ─────────────────────────────────────────────
+// ── REWRITE ───────────────────────────────────────────────
 function rewriteM3u8(body, url) {
   const base = new URL(url).searchParams.get('url') || url;
 
@@ -123,28 +103,24 @@ function rewriteM3u8(body, url) {
     if (!t || t.startsWith('#')) return line;
 
     const abs = new URL(t, base).href;
-
     return '/api?url=' + encodeURIComponent(abs);
   }).join('\n');
 }
 
-// ─────────────────────────────────────────────
-// HANDLER
-// ─────────────────────────────────────────────
+// ── MAIN ──────────────────────────────────────────────────
 module.exports = async function handler(req, res) {
 
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', '*');
 
   const { searchParams } = new URL(req.url, 'http://localhost');
   const q = Object.fromEntries(searchParams);
 
-  // ── ENTRY POINT ─────────────────────────────
+  // ── ENTRY POINT (FIXED) ───────────────────────────────
   if (q.id) {
     try {
       const streamUrl = await getStream(q.id, q.s, q.e);
 
-      // 👉 IMPORTANT: OPEN PROXY ENTRY
+      // 🔥 THIS IS THE KEY FIX
       res.writeHead(302, {
         Location: '/api?url=' + encodeURIComponent(streamUrl)
       });
@@ -157,7 +133,7 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  // ── PROXY MODE ──────────────────────────────
+  // ── PROXY MODE ─────────────────────────────────────────
   if (q.url) {
     const url = decodeURIComponent(q.url);
 
@@ -179,7 +155,7 @@ module.exports = async function handler(req, res) {
         return res.end(rewriteM3u8(body, url));
       }
 
-      res.setHeader('Content-Type', ct || 'application/octet-stream');
+      res.setHeader('Content-Type', ct);
       return upstream.pipe(res);
 
     } catch (e) {
