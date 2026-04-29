@@ -1,214 +1,616 @@
-'use strict';
+"use strict";
 
-const fs = require('fs');
-const path = require('path');
-const https = require('https');
-const http = require('http');
+(() => {
+  const enosys = () => {
+    const err = new Error("not implemented");
+    err.code = "ENOSYS";
+    return err;
+  };
 
-const REFERER = 'https://vidlink.pro/';
-const ORIGIN  = 'https://vidlink.pro';
-const UA      = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124';
-
-// ── WASM BOOT ─────────────────────────────────────────────
-let bootPromise = null;
-
-function bootWasm() {
-  if (bootPromise) return bootPromise;
-
-  bootPromise = (async () => {
-    globalThis.window = globalThis;
-    globalThis.self = globalThis;
-    globalThis.document = { createElement: () => ({}), body: { appendChild: () => {} } };
-
-    const sodium = require('libsodium-wrappers');
-    await sodium.ready;
-    globalThis.sodium = sodium;
-
-    eval(fs.readFileSync(path.join(__dirname, 'script.js'), 'utf8'));
-
-    const go = new Dm();
-    const wasmBuf = fs.readFileSync(path.join(__dirname, 'fu.wasm'));
-    const { instance } = await WebAssembly.instantiate(wasmBuf, go.importObject);
-    go.run(instance);
-
-    await new Promise(r => setTimeout(r, 500));
-    if (typeof globalThis.getAdv !== 'function') throw new Error('getAdv not found');
-  })();
-
-  return bootPromise;
-}
-
-// ── STREAM TOKEN ──────────────────────────────────────────
-async function getStream(id, season, episode) {
-  await bootWasm();
-
-  const token = globalThis.getAdv(String(id));
-  if (!token) throw new Error('Token generation failed');
-
-  const apiUrl = season
-    ? `https://vidlink.pro/api/b/tv/${token}/${season}/${episode || 1}?multiLang=1`
-    : `https://vidlink.pro/api/b/movie/${token}?multiLang=1`;
-
-  const res = await fetch(apiUrl, {
-    headers: {
-      Referer: REFERER,
-      Origin: ORIGIN,
-      'User-Agent': UA
-    }
-  });
-
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
-
-  const data = await res.json();
-  const playlist = data?.stream?.playlist;
-
-  if (!playlist) throw new Error('No playlist found');
-
-  console.log('🎬 Playlist:', playlist);
-  return playlist;
-}
-
-// ── UPSTREAM FETCH ────────────────────────────────────────
-function fetchUpstream(url, redirects = 0) {
-  return new Promise((resolve, reject) => {
-    if (redirects > 5) return reject(new Error('Too many redirects'));
-
-    const client = url.startsWith('https') ? https : http;
-
-    const req = client.get(url, {
-      headers: {
-        Referer: REFERER,
-        Origin: ORIGIN,
-        'User-Agent': UA,
-        Accept: '*/*'
-      }
-    }, res => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        const next = new URL(res.headers.location, url).href;
-        return resolve(fetchUpstream(next, redirects + 1));
-      }
-      resolve(res);
-    });
-
-    req.on('error', reject);
-  });
-}
-
-// ── SMART M3U8 REWRITE (FIXED) ────────────────────────────
-function rewriteM3u8(body, url) {
-  const realUrl = new URL(url).searchParams.get('url') || url;
-  const isMaster = body.includes('#EXT-X-STREAM-INF');
-
-  return body.split('\n').map(line => {
-    const t = line.trim();
-
-    // keep comments
-    if (!t || t.startsWith('#')) return line;
-
-    const abs = new URL(t, realUrl).href;
-
-    // MASTER playlist → only rewrite variant playlists
-    if (isMaster && abs.includes('.m3u8')) {
-      return '/api?url=' + encodeURIComponent(abs);
-    }
-
-    // MEDIA playlist → rewrite TS segments
-    if (!isMaster) {
-      return '/api?url=' + encodeURIComponent(abs);
-    }
-
-    return line;
-  }).join('\n');
-}
-
-// ── MAIN HANDLER ──────────────────────────────────────────
-module.exports = async function handler(req, res) {
-
-  // CORS
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', '*');
-  res.setHeader('Access-Control-Expose-Headers', '*');
-
-  if (req.method === 'OPTIONS') {
-    res.statusCode = 200;
-    return res.end();
+  if (!globalThis.fs) {
+    let outputBuf = "";
+    globalThis.fs = {
+      constants: {
+        O_WRONLY: -1,
+        O_RDWR: -1,
+        O_CREAT: -1,
+        O_TRUNC: -1,
+        O_APPEND: -1,
+        O_EXCL: -1,
+      },
+      writeSync(fd, buf) {
+        outputBuf += decoder.decode(buf);
+        const nl = outputBuf.lastIndexOf("\n");
+        if (nl != -1) {
+          console.log(outputBuf.substring(0, nl));
+          outputBuf = outputBuf.substring(nl + 1);
+        }
+        return buf.length;
+      },
+      write(fd, buf, offset, length, position, callback) {
+        if (offset !== 0 || length !== buf.length || position !== null) {
+          callback(enosys());
+          return;
+        }
+        const n = this.writeSync(fd, buf);
+        callback(null, n);
+      },
+      chmod(path, mode, callback) {
+        callback(enosys());
+      },
+      chown(path, uid, gid, callback) {
+        callback(enosys());
+      },
+      close(fd, callback) {
+        callback(enosys());
+      },
+      fchmod(fd, mode, callback) {
+        callback(enosys());
+      },
+      fchown(fd, uid, gid, callback) {
+        callback(enosys());
+      },
+      fstat(fd, callback) {
+        callback(enosys());
+      },
+      fsync(fd, callback) {
+        callback(null);
+      },
+      ftruncate(fd, length, callback) {
+        callback(enosys());
+      },
+      lchown(path, uid, gid, callback) {
+        callback(enosys());
+      },
+      link(path, link, callback) {
+        callback(enosys());
+      },
+      lstat(path, callback) {
+        callback(enosys());
+      },
+      mkdir(path, perm, callback) {
+        callback(enosys());
+      },
+      open(path, flags, mode, callback) {
+        callback(enosys());
+      },
+      read(fd, buffer, offset, length, position, callback) {
+        callback(enosys());
+      },
+      readdir(path, callback) {
+        callback(enosys());
+      },
+      readlink(path, callback) {
+        callback(enosys());
+      },
+      rename(from, to, callback) {
+        callback(enosys());
+      },
+      rmdir(path, callback) {
+        callback(enosys());
+      },
+      stat(path, callback) {
+        callback(enosys());
+      },
+      symlink(path, link, callback) {
+        callback(enosys());
+      },
+      truncate(path, length, callback) {
+        callback(enosys());
+      },
+      unlink(path, callback) {
+        callback(enosys());
+      },
+      utimes(path, atime, mtime, callback) {
+        callback(enosys());
+      },
+    };
   }
 
-  const { searchParams } = new URL(req.url, 'http://localhost');
-  const q = Object.fromEntries(searchParams);
+  if (!globalThis.process) {
+    globalThis.process = {
+      getuid() {
+        return -1;
+      },
+      getgid() {
+        return -1;
+      },
+      geteuid() {
+        return -1;
+      },
+      getegid() {
+        return -1;
+      },
+      getgroups() {
+        throw enosys();
+      },
+      pid: -1,
+      ppid: -1,
+      umask() {
+        throw enosys();
+      },
+      cwd() {
+        throw enosys();
+      },
+      chdir() {
+        throw enosys();
+      },
+    };
+  }
 
-  // ── PROXY MODE ─────────────────────────────────────────
-  if (q.url) {
-    const url = decodeURIComponent(q.url);
+  if (!globalThis.crypto) {
+    throw new Error(
+      "globalThis.crypto is not available, polyfill required (crypto.getRandomValues only)"
+    );
+  }
 
-    try {
-      const upstream = await fetchUpstream(url);
+  if (!globalThis.performance) {
+    throw new Error(
+      "globalThis.performance is not available, polyfill required (performance.now only)"
+    );
+  }
 
-      const ct = (upstream.headers['content-type'] || '').toLowerCase();
-      const isM3u8 =
-        ct.includes('mpegurl') ||
-        ct.includes('m3u8') ||
-        /\.m3u8/i.test(url.split('?')[0]);
+  if (!globalThis.TextEncoder) {
+    throw new Error(
+      "globalThis.TextEncoder is not available, polyfill required"
+    );
+  }
 
-      if (isM3u8) {
-        const chunks = [];
-        for await (const c of upstream) chunks.push(c);
+  if (!globalThis.TextDecoder) {
+    throw new Error(
+      "globalThis.TextDecoder is not available, polyfill required"
+    );
+  }
 
-        const body = Buffer.concat(chunks).toString('utf8');
+  const encoder = new TextEncoder("utf-8");
+  const decoder = new TextDecoder("utf-8");
 
-        console.log('📄 TYPE:', body.includes('#EXT-X-STREAM-INF') ? 'MASTER' : 'MEDIA');
+  globalThis.Dm = class {
+    constructor() {
+      this.argv = ["js"];
+      this.env = {};
+      this.exit = (code) => {
+        if (code !== 0) {
+          console.warn("exit code:", code);
+        }
+      };
+      this._exitPromise = new Promise((resolve) => {
+        this._resolveExitPromise = resolve;
+      });
+      this._pendingEvent = null;
+      this._scheduledTimeouts = new Map();
+      this._nextCallbackTimeoutID = 1;
 
-        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        res.setHeader('Cache-Control', 'no-store');
+      const setInt64 = (addr, v) => {
+        this.mem.setUint32(addr + 0, v, true);
+        this.mem.setUint32(addr + 4, Math.floor(v / 4294967296), true);
+      };
 
-        return res.end(rewriteM3u8(body, url));
+      const setInt32 = (addr, v) => {
+        this.mem.setUint32(addr + 0, v, true);
+      };
+
+      const getInt64 = (addr) => {
+        const low = this.mem.getUint32(addr + 0, true);
+        const high = this.mem.getInt32(addr + 4, true);
+        return low + high * 4294967296;
+      };
+
+      const loadValue = (addr) => {
+        const f = this.mem.getFloat64(addr, true);
+        if (f === 0) {
+          return undefined;
+        }
+        if (!isNaN(f)) {
+          return f;
+        }
+
+        const id = this.mem.getUint32(addr, true);
+        return this._values[id];
+      };
+
+      const storeValue = (addr, v) => {
+        const nanHead = 0x7ff80000;
+
+        if (typeof v === "number" && v !== 0) {
+          if (isNaN(v)) {
+            this.mem.setUint32(addr + 4, nanHead, true);
+            this.mem.setUint32(addr, 0, true);
+            return;
+          }
+          this.mem.setFloat64(addr, v, true);
+          return;
+        }
+
+        if (v === undefined) {
+          this.mem.setFloat64(addr, 0, true);
+          return;
+        }
+
+        let id = this._ids.get(v);
+        if (id === undefined) {
+          id = this._idPool.pop();
+          if (id === undefined) {
+            id = this._values.length;
+          }
+          this._values[id] = v;
+          this._goRefCounts[id] = 0;
+          this._ids.set(v, id);
+        }
+        this._goRefCounts[id]++;
+        let typeFlag = 0;
+        switch (typeof v) {
+          case "object":
+            if (v !== null) {
+              typeFlag = 1;
+            }
+            break;
+          case "string":
+            typeFlag = 2;
+            break;
+          case "symbol":
+            typeFlag = 3;
+            break;
+          case "function":
+            typeFlag = 4;
+            break;
+        }
+        this.mem.setUint32(addr + 4, nanHead | typeFlag, true);
+        this.mem.setUint32(addr, id, true);
+      };
+
+      const loadSlice = (addr) => {
+        const array = getInt64(addr + 0);
+        const len = getInt64(addr + 8);
+        return new Uint8Array(this._inst.exports.mem.buffer, array, len);
+      };
+
+      const loadSliceOfValues = (addr) => {
+        const array = getInt64(addr + 0);
+        const len = getInt64(addr + 8);
+        const a = new Array(len);
+        for (let i = 0; i < len; i++) {
+          a[i] = loadValue(array + i * 8);
+        }
+        return a;
+      };
+
+      const loadString = (addr) => {
+        const saddr = getInt64(addr + 0);
+        const len = getInt64(addr + 8);
+        return decoder.decode(
+          new DataView(this._inst.exports.mem.buffer, saddr, len)
+        );
+      };
+
+      const timeOrigin = Date.now() - performance.now();
+      this.importObject = {
+        _gotest: {
+          add: (a, b) => a + b,
+        },
+        gojs: {
+          "runtime.wasmExit": (sp) => {
+            sp >>>= 0;
+            const code = this.mem.getInt32(sp + 8, true);
+            this.exited = true;
+            delete this._inst;
+            delete this._values;
+            delete this._goRefCounts;
+            delete this._ids;
+            delete this._idPool;
+            this.exit(code);
+          },
+
+          "runtime.wasmWrite": (sp) => {
+            sp >>>= 0;
+            const fd = getInt64(sp + 8);
+            const p = getInt64(sp + 16);
+            const n = this.mem.getInt32(sp + 24, true);
+            fs.writeSync(
+              fd,
+              new Uint8Array(this._inst.exports.mem.buffer, p, n)
+            );
+          },
+
+          "runtime.resetMemoryDataView": (sp) => {
+            sp >>>= 0;
+            this.mem = new DataView(this._inst.exports.mem.buffer);
+          },
+
+          "runtime.nanotime1": (sp) => {
+            sp >>>= 0;
+            setInt64(sp + 8, (timeOrigin + performance.now()) * 1000000);
+          },
+
+          "runtime.walltime": (sp) => {
+            sp >>>= 0;
+            const msec = new Date().getTime();
+            setInt64(sp + 8, msec / 1000);
+            this.mem.setInt32(sp + 16, (msec % 1000) * 1000000, true);
+          },
+
+          "runtime.scheduleTimeoutEvent": (sp) => {
+            sp >>>= 0;
+            const id = this._nextCallbackTimeoutID;
+            this._nextCallbackTimeoutID++;
+            this._scheduledTimeouts.set(
+              id,
+              setTimeout(() => {
+                this._resume();
+                while (this._scheduledTimeouts.has(id)) {
+                  console.warn("scheduleTimeoutEvent: missed timeout event");
+                  this._resume();
+                }
+              }, getInt64(sp + 8))
+            );
+            this.mem.setInt32(sp + 16, id, true);
+          },
+
+          "runtime.clearTimeoutEvent": (sp) => {
+            sp >>>= 0;
+            const id = this.mem.getInt32(sp + 8, true);
+            clearTimeout(this._scheduledTimeouts.get(id));
+            this._scheduledTimeouts.delete(id);
+          },
+
+          "runtime.getRandomData": (sp) => {
+            sp >>>= 0;
+            crypto.getRandomValues(loadSlice(sp + 8));
+          },
+
+          "syscall/js.finalizeRef": (sp) => {
+            sp >>>= 0;
+            const id = this.mem.getUint32(sp + 8, true);
+            this._goRefCounts[id]--;
+            if (this._goRefCounts[id] === 0) {
+              const v = this._values[id];
+              this._values[id] = null;
+              this._ids.delete(v);
+              this._idPool.push(id);
+            }
+          },
+
+          "syscall/js.stringVal": (sp) => {
+            sp >>>= 0;
+            storeValue(sp + 24, loadString(sp + 8));
+          },
+
+          "syscall/js.valueGet": (sp) => {
+            sp >>>= 0;
+            const result = Reflect.get(loadValue(sp + 8), loadString(sp + 16));
+            sp = this._inst.exports.getsp() >>> 0;
+            storeValue(sp + 32, result);
+          },
+
+          "syscall/js.valueSet": (sp) => {
+            sp >>>= 0;
+            Reflect.set(
+              loadValue(sp + 8),
+              loadString(sp + 16),
+              loadValue(sp + 32)
+            );
+          },
+
+          "syscall/js.valueDelete": (sp) => {
+            sp >>>= 0;
+            Reflect.deleteProperty(loadValue(sp + 8), loadString(sp + 16));
+          },
+
+          "syscall/js.valueIndex": (sp) => {
+            sp >>>= 0;
+            storeValue(
+              sp + 24,
+              Reflect.get(loadValue(sp + 8), getInt64(sp + 16))
+            );
+          },
+
+          "syscall/js.valueSetIndex": (sp) => {
+            sp >>>= 0;
+            Reflect.set(
+              loadValue(sp + 8),
+              getInt64(sp + 16),
+              loadValue(sp + 24)
+            );
+          },
+
+          "syscall/js.valueCall": (sp) => {
+            sp >>>= 0;
+            try {
+              const v = loadValue(sp + 8);
+              const m = Reflect.get(v, loadString(sp + 16));
+              const args = loadSliceOfValues(sp + 32);
+              const result = Reflect.apply(m, v, args);
+              sp = this._inst.exports.getsp() >>> 0;
+              storeValue(sp + 56, result);
+              this.mem.setUint8(sp + 64, 1);
+            } catch (err) {
+              sp = this._inst.exports.getsp() >>> 0;
+              storeValue(sp + 56, err);
+              this.mem.setUint8(sp + 64, 0);
+            }
+          },
+
+          "syscall/js.valueInvoke": (sp) => {
+            sp >>>= 0;
+            try {
+              const v = loadValue(sp + 8);
+              const args = loadSliceOfValues(sp + 16);
+              const result = Reflect.apply(v, undefined, args);
+              sp = this._inst.exports.getsp() >>> 0;
+              storeValue(sp + 40, result);
+              this.mem.setUint8(sp + 48, 1);
+            } catch (err) {
+              sp = this._inst.exports.getsp() >>> 0;
+              storeValue(sp + 40, err);
+              this.mem.setUint8(sp + 48, 0);
+            }
+          },
+
+          "syscall/js.valueNew": (sp) => {
+            sp >>>= 0;
+            try {
+              const v = loadValue(sp + 8);
+              const args = loadSliceOfValues(sp + 16);
+              const result = Reflect.construct(v, args);
+              sp = this._inst.exports.getsp() >>> 0;
+              storeValue(sp + 40, result);
+              this.mem.setUint8(sp + 48, 1);
+            } catch (err) {
+              sp = this._inst.exports.getsp() >>> 0;
+              storeValue(sp + 40, err);
+              this.mem.setUint8(sp + 48, 0);
+            }
+          },
+
+          "syscall/js.valueLength": (sp) => {
+            sp >>>= 0;
+            setInt64(sp + 16, parseInt(loadValue(sp + 8).length));
+          },
+
+          "syscall/js.valuePrepareString": (sp) => {
+            sp >>>= 0;
+            const str = encoder.encode(String(loadValue(sp + 8)));
+            storeValue(sp + 16, str);
+            setInt64(sp + 24, str.length);
+          },
+
+          "syscall/js.valueLoadString": (sp) => {
+            sp >>>= 0;
+            const str = loadValue(sp + 8);
+            loadSlice(sp + 16).set(str);
+          },
+
+          "syscall/js.valueInstanceOf": (sp) => {
+            sp >>>= 0;
+            this.mem.setUint8(
+              sp + 24,
+              loadValue(sp + 8) instanceof loadValue(sp + 16) ? 1 : 0
+            );
+          },
+
+          "syscall/js.copyBytesToGo": (sp) => {
+            sp >>>= 0;
+            const dst = loadSlice(sp + 8);
+            const src = loadValue(sp + 32);
+            if (
+              !(src instanceof Uint8Array || src instanceof Uint8ClampedArray)
+            ) {
+              this.mem.setUint8(sp + 48, 0);
+              return;
+            }
+            const toCopy = src.subarray(0, dst.length);
+            dst.set(toCopy);
+            setInt64(sp + 40, toCopy.length);
+            this.mem.setUint8(sp + 48, 1);
+          },
+
+          "syscall/js.copyBytesToJS": (sp) => {
+            sp >>>= 0;
+            const dst = loadValue(sp + 8);
+            const src = loadSlice(sp + 16);
+            if (
+              !(dst instanceof Uint8Array || dst instanceof Uint8ClampedArray)
+            ) {
+              this.mem.setUint8(sp + 48, 0);
+              return;
+            }
+            const toCopy = src.subarray(0, dst.length);
+            dst.set(toCopy);
+            setInt64(sp + 40, toCopy.length);
+            this.mem.setUint8(sp + 48, 1);
+          },
+
+          debug: (value) => {
+            console.log(value);
+          },
+        },
+      };
+    }
+
+    async run(instance) {
+      if (!(instance instanceof WebAssembly.Instance)) {
+        throw new Error("Instance expected");
+      }
+      this._inst = instance;
+      this.mem = new DataView(this._inst.exports.mem.buffer);
+      this._values = [NaN, 0, null, true, false, globalThis, this];
+      this._goRefCounts = new Array(this._values.length).fill(Infinity);
+      this._ids = new Map([
+        [0, 1],
+        [null, 2],
+        [true, 3],
+        [false, 4],
+        [globalThis, 5],
+        [this, 6],
+      ]);
+      this._idPool = [];
+      this.exited = false;
+      let offset = 4096;
+
+      const strPtr = (str) => {
+        const ptr = offset;
+        const bytes = encoder.encode(str + "\0");
+        new Uint8Array(this.mem.buffer, offset, bytes.length).set(bytes);
+        offset += bytes.length;
+        if (offset % 8 !== 0) {
+          offset += 8 - (offset % 8);
+        }
+        return ptr;
+      };
+
+      const argc = this.argv.length;
+
+      const argvPtrs = [];
+      this.argv.forEach((arg) => {
+        argvPtrs.push(strPtr(arg));
+      });
+      argvPtrs.push(0);
+
+      const keys = Object.keys(this.env).sort();
+      keys.forEach((key) => {
+        argvPtrs.push(strPtr(`${key}=${this.env[key]}`));
+      });
+      argvPtrs.push(0);
+
+      const argv = offset;
+      argvPtrs.forEach((ptr) => {
+        this.mem.setUint32(offset, ptr, true);
+        this.mem.setUint32(offset + 4, 0, true);
+        offset += 8;
+      });
+
+      const wasmMinDataAddr = 4096 + 8192;
+      if (offset >= wasmMinDataAddr) {
+        throw new Error(
+          "total length of command line and environment variables exceeds limit"
+        );
       }
 
-      // TS / media files
-      res.setHeader('Content-Type', ct || 'application/octet-stream');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Accept-Ranges', 'bytes');
-
-      if (upstream.headers['content-length']) {
-        res.setHeader('Content-Length', upstream.headers['content-length']);
+      this._inst.exports.run(argc, argv);
+      if (this.exited) {
+        this._resolveExitPromise();
       }
-
-      res.statusCode = upstream.statusCode;
-      return upstream.pipe(res);
-
-    } catch (err) {
-      res.statusCode = 502;
-      return res.end(err.message);
-    }
-  }
-
-  // ── STREAM FETCH ────────────────────────────────────────
-  if (!q.id) {
-    res.statusCode = 400;
-    return res.end(JSON.stringify({ error: 'Missing id' }));
-  }
-
-  try {
-    const streamUrl = await getStream(q.id, q.s, q.e);
-
-    if (q.proxy === 'true') {
-      const upstream = await fetchUpstream(streamUrl);
-
-      const chunks = [];
-      for await (const c of upstream) chunks.push(c);
-
-      const body = Buffer.concat(chunks).toString('utf8');
-
-      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-      return res.end(rewriteM3u8(body, streamUrl));
+      await this._exitPromise;
     }
 
-    res.setHeader('Content-Type', 'application/json');
-    return res.end(JSON.stringify({ url: streamUrl }));
+    _resume() {
+      if (this.exited) {
+        throw new Error("program has already exited");
+      }
+      this._inst.exports.resume();
+      if (this.exited) {
+        this._resolveExitPromise();
+      }
+    }
 
-  } catch (err) {
-    res.statusCode = 500;
-    return res.end(JSON.stringify({ error: err.message }));
-  }
-};
+    _makeFuncWrapper(id) {
+      const go = this;
+      return function () {
+        const event = { id: id, this: this, args: arguments };
+        go._pendingEvent = event;
+        go._resume();
+        return event.result;
+      };
+    }
+  };
+})();
