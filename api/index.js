@@ -45,8 +45,8 @@ async function getStream(id, season, episode) {
   if (!token) throw new Error('getAdv returned null');
 
   const apiUrl = season
-    ? `https://vidlink.pro/api/b/tv/${token}/${season}/${episode || 1}?multiLang=0`
-    : `https://vidlink.pro/api/b/movie/${token}?multiLang=0`;
+    ? `https://vidlink.pro/api/b/tv/${token}/${season}/${episode || 1}`
+    : `https://vidlink.pro/api/b/movie/${token}`;
 
   const res = await fetch(apiUrl, {
     headers: { Referer: REFERER, Origin: ORIGIN, 'User-Agent': UA }
@@ -55,6 +55,7 @@ async function getStream(id, season, episode) {
   const data = await res.json();
   const playlist = data?.stream?.playlist;
   if (!playlist) throw new Error('No playlist in response');
+  console.log('Playlist URL:', playlist); // Debug log
   return playlist;
 }
 
@@ -89,6 +90,12 @@ function rewriteM3u8(body, url) {
 // ── Vercel serverless handler ─────────────────────────────────────────────────
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Range');
+  if (req.method === 'OPTIONS') {
+    res.statusCode = 200;
+    return res.end();
+  }
 
   const { searchParams } = new URL(req.url, 'http://localhost');
   const q = Object.fromEntries(searchParams);
