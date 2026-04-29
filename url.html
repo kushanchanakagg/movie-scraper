@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Get Stream URL</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
+input { padding: 10px; margin: 5px; width: 200px; }
+button { padding: 10px 20px; margin: 5px; background: #007bff; color: white; border: none; cursor: pointer; }
+button:hover { background: #0056b3; }
+.result { margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 5px; word-break: break-all; }
+.error { color: #dc3545; }
+.success { color: #28a745; }
+</style>
+</head>
+<body>
+<h1>Movie Stream URL Extractor</h1>
+<p>Get direct stream URLs for movies and TV shows</p>
+
+<div>
+  <h3>Movie</h3>
+  <input type="text" id="movieId" placeholder="Movie ID (e.g., 550)">
+  <button onclick="getMovieUrl()">Get Movie URL</button>
+</div>
+
+<div>
+  <h3>TV Episode</h3>
+  <input type="text" id="tvId" placeholder="TV Show ID (e.g., 456)">
+  <input type="text" id="season" placeholder="Season (e.g., 1)">
+  <input type="text" id="episode" placeholder="Episode (e.g., 1)">
+  <button onclick="getTvUrl()">Get TV Episode URL</button>
+</div>
+
+<div id="result"></div>
+
+<script>
+async function getMovieUrl() {
+  const id = document.getElementById('movieId').value;
+  if (!id) {
+    showResult('Please enter a movie ID', 'error');
+    return;
+  }
+  
+  try {
+    const response = await fetch(`/api?id=${id}`);
+    const data = await response.json();
+    
+    if (data.error) {
+      showResult(`Error: ${data.error}`, 'error');
+    } else {
+      showResult(`Stream URL: ${data.url}`, 'success');
+    }
+  } catch (err) {
+    showResult(`Error: ${err.message}`, 'error');
+  }
+}
+
+async function getTvUrl() {
+  const id = document.getElementById('tvId').value;
+  const season = document.getElementById('season').value;
+  const episode = document.getElementById('episode').value;
+  
+  if (!id || !season || !episode) {
+    showResult('Please enter TV show ID, season, and episode', 'error');
+    return;
+  }
+  
+  try {
+    const response = await fetch(`/api?id=${id}&s=${season}&e=${episode}`);
+    const data = await response.json();
+    
+    if (data.error) {
+      showResult(`Error: ${data.error}`, 'error');
+    } else {
+      showResult(`Stream URL: ${data.url}`, 'success');
+    }
+  } catch (err) {
+    showResult(`Error: ${err.message}`, 'error');
+  }
+}
+
+function showResult(message, type) {
+  const resultDiv = document.getElementById('result');
+  resultDiv.innerHTML = `<div class="${type}">${message}</div>`;
+}
+</script>
+</body>
+</html>
