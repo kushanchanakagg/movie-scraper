@@ -7,7 +7,7 @@ const http = require('http');
 
 const REFERER = 'https://vidlink.pro/';
 const ORIGIN  = 'https://vidlink.pro';
-const UA      = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124';
+const UA      = 'Mozilla/5.0 Chrome/124';
 
 // ── WASM BOOT ─────────────────────────────────────────────
 let bootPromise = null;
@@ -18,7 +18,7 @@ function bootWasm() {
   bootPromise = (async () => {
     globalThis.window = globalThis;
     globalThis.self = globalThis;
-    globalThis.document = { createElement: () => ({}), body: { appendChild: () => {} } };
+    globalThis.document = {};
 
     const sodium = require('libsodium-wrappers');
     await sodium.ready;
@@ -69,7 +69,7 @@ async function getStream(id, season, episode) {
   return data?.stream?.playlist;
 }
 
-// ── FETCH UPSTREAM ────────────────────────────────────────
+// ── FETCH ────────────────────────────────────────────────
 function fetchUpstream(url, redirects = 0) {
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject('Too many redirects');
@@ -94,39 +94,38 @@ function fetchUpstream(url, redirects = 0) {
   });
 }
 
-// ── SMART REWRITE ─────────────────────────────────────────
+// ── REWRITE ───────────────────────────────────────────────
 function rewriteM3u8(body, url) {
-  const realUrl = new URL(url).searchParams.get('url') || url;
+  const base = new URL(url).searchParams.get('url') || url;
 
   return body.split('\n').map(line => {
     const t = line.trim();
     if (!t || t.startsWith('#')) return line;
 
-    const abs = new URL(t, realUrl).href;
-
+    const abs = new URL(t, base).href;
     return '/api?url=' + encodeURIComponent(abs);
   }).join('\n');
 }
 
-// ── HANDLER ───────────────────────────────────────────────
+// ── MAIN ──────────────────────────────────────────────────
 module.exports = async function handler(req, res) {
 
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', '*');
 
   const { searchParams } = new URL(req.url, 'http://localhost');
   const q = Object.fromEntries(searchParams);
 
-  // ── STREAM ENTRY ───────────────────────────────────────
+  // ── ENTRY POINT (FIXED) ───────────────────────────────
   if (q.id) {
     try {
       const streamUrl = await getStream(q.id, q.s, q.e);
 
-      // ✅ IMPORTANT: return PROXY URL, NOT redirect
-      res.setHeader('Content-Type', 'application/json');
-      return res.end(JSON.stringify({
-        url: '/api?url=' + encodeURIComponent(streamUrl)
-      }));
+      // 🔥 THIS IS THE KEY FIX
+      res.writeHead(302, {
+        Location: '/api?url=' + encodeURIComponent(streamUrl)
+      });
+
+      return res.end();
 
     } catch (e) {
       res.statusCode = 500;
