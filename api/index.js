@@ -26,13 +26,22 @@ function bootWasm() {
 
     eval(fs.readFileSync(path.join(__dirname, 'script.js'), 'utf8'));
 
-    const go = new Dm();
+    // FIX: safe Dm access
+    const DmClass = globalThis.Dm || globalThis.DmClass;
+    if (!DmClass) throw new Error('Dm is not defined in script.js');
+
+    const go = new DmClass();
+
     const wasmBuf = fs.readFileSync(path.join(__dirname, 'fu.wasm'));
     const { instance } = await WebAssembly.instantiate(wasmBuf, go.importObject);
+
     go.run(instance);
 
     await new Promise(r => setTimeout(r, 500));
-    if (typeof globalThis.getAdv !== 'function') throw new Error('getAdv not found');
+
+    if (typeof globalThis.getAdv !== 'function') {
+      throw new Error('getAdv not found');
+    }
   })();
 
   return bootPromise;
@@ -94,30 +103,19 @@ function fetchUpstream(url, redirects = 0) {
   });
 }
 
-// ── SMART M3U8 REWRITE (FIXED) ────────────────────────────
+// ── M3U8 REWRITE (SAFE) ───────────────────────────────────
 function rewriteM3u8(body, url) {
   const realUrl = new URL(url).searchParams.get('url') || url;
   const isMaster = body.includes('#EXT-X-STREAM-INF');
 
   return body.split('\n').map(line => {
     const t = line.trim();
-
-    // keep comments
     if (!t || t.startsWith('#')) return line;
 
     const abs = new URL(t, realUrl).href;
 
-    // MASTER playlist → only rewrite variant playlists
-    if (isMaster && abs.includes('.m3u8')) {
-      return '/api?url=' + encodeURIComponent(abs);
-    }
-
-    // MEDIA playlist → rewrite TS segments
-    if (!isMaster) {
-      return '/api?url=' + encodeURIComponent(abs);
-    }
-
-    return line;
+    // keep structure safe
+    return '/api?url=' + encodeURIComponent(abs);
   }).join('\n');
 }
 
@@ -128,7 +126,6 @@ module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', '*');
-  res.setHeader('Access-Control-Expose-Headers', '*');
 
   if (req.method === 'OPTIONS') {
     res.statusCode = 200;
@@ -148,24 +145,26 @@ module.exports = async function handler(req, res) {
       const ct = (upstream.headers['content-type'] || '').toLowerCase();
       const isM3u8 =
         ct.includes('mpegurl') ||
-        ct.includes('m3u8') ||
         /\.m3u8/i.test(url.split('?')[0]);
 
+      // ── M3U8 HANDLING ────────────────────────────────
       if (isM3u8) {
         const chunks = [];
         for await (const c of upstream) chunks.push(c);
 
         const body = Buffer.concat(chunks).toString('utf8');
 
-        console.log('📄 TYPE:', body.includes('#EXT-X-STREAM-INF') ? 'MASTER' : 'MEDIA');
+        console.log('📄 Playlist type:', body.includes('#EXT-X-STREAM-INF') ? 'MASTER' : 'MEDIA');
 
-        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        // ❌ FORCE DOWNLOAD MODE (your request)
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Content-Disposition', 'attachment; filename="playlist.m3u8"');
         res.setHeader('Cache-Control', 'no-store');
 
-        return res.end(rewriteM3u8(body, url));
+        return res.end(body);
       }
 
-      // TS / media files
+      // ── TS / MEDIA FILES ─────────────────────────────
       res.setHeader('Content-Type', ct || 'application/octet-stream');
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Accept-Ranges', 'bytes');
@@ -191,18 +190,6 @@ module.exports = async function handler(req, res) {
 
   try {
     const streamUrl = await getStream(q.id, q.s, q.e);
-
-    if (q.proxy === 'true') {
-      const upstream = await fetchUpstream(streamUrl);
-
-      const chunks = [];
-      for await (const c of upstream) chunks.push(c);
-
-      const body = Buffer.concat(chunks).toString('utf8');
-
-      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-      return res.end(rewriteM3u8(body, streamUrl));
-    }
 
     res.setHeader('Content-Type', 'application/json');
     return res.end(JSON.stringify({ url: streamUrl }));
