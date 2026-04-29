@@ -83,7 +83,12 @@ function rewriteM3u8(body, url) {
     const t = line.trim();
     if (!t || t.startsWith('#')) return line;
     const abs = t.startsWith('http') ? t : t.startsWith('/') ? origin + t : baseDir + t;
-    return '/api?url=' + encodeURIComponent(abs);
+    // Only rewrite .ts files and media segments - never rewrite .m3u8 files
+    if (abs.includes('.ts') || abs.includes('.m4s') || abs.includes('.mp4')) {
+      return '/api?url=' + encodeURIComponent(abs);
+    }
+    // Keep all playlist URLs as-is (both main and child playlists)
+    return abs;
   }).join('\n');
 }
 
