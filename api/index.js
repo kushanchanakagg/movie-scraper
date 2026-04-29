@@ -45,8 +45,8 @@ async function getStream(id, season, episode) {
   if (!token) throw new Error('getAdv returned null');
 
   const apiUrl = season
-    ? `https://vidlink.pro/api/b/tv/${token}/${season}/${episode || 1}`
-    : `https://vidlink.pro/api/b/movie/${token}`;
+    ? `https://vidlink.pro/api/b/tv/${token}/${season}/${episode || 1}?multiLang=1`
+    : `https://vidlink.pro/api/b/movie/${token}?multiLang=1`;
 
   const res = await fetch(apiUrl, {
     headers: { Referer: REFERER, Origin: ORIGIN, 'User-Agent': UA }
@@ -83,12 +83,8 @@ function rewriteM3u8(body, url) {
     const t = line.trim();
     if (!t || t.startsWith('#')) return line;
     const abs = t.startsWith('http') ? t : t.startsWith('/') ? origin + t : baseDir + t;
-    // Only rewrite .ts files and media segments - never rewrite .m3u8 files
-    if (abs.includes('.ts') || abs.includes('.m4s') || abs.includes('.mp4')) {
-      return '/api?url=' + encodeURIComponent(abs);
-    }
-    // Keep all playlist URLs as-is (both main and child playlists)
-    return abs;
+    // Rewrite all media files to go through proxy
+    return '/api?url=' + encodeURIComponent(abs);
   }).join('\n');
 }
 
@@ -117,6 +113,7 @@ module.exports = async function handler(req, res) {
         const chunks = [];
         for await (const chunk of upstream) chunks.push(chunk);
         const body = Buffer.concat(chunks).toString('utf8');
+        console.log('M3U8 Content Preview:', body.substring(0, 500)); // Debug log
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
         return res.end(rewriteM3u8(body, url));
       } else {
