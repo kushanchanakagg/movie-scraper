@@ -9,7 +9,7 @@ const REFERER = 'https://vidlink.pro/';
 const ORIGIN  = 'https://vidlink.pro';
 const UA      = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124';
 
-// ── WASM singleton ────────────────────────────────────────────────────────────
+// ── WASM BOOT ─────────────────────────────────────────────
 let bootPromise = null;
 
 function bootWasm() {
@@ -38,7 +38,7 @@ function bootWasm() {
   return bootPromise;
 }
 
-// ── Get stream URL ────────────────────────────────────────────────────────────
+// ── STREAM TOKEN ──────────────────────────────────────────
 async function getStream(id, season, episode) {
   await bootWasm();
 
@@ -64,12 +64,11 @@ async function getStream(id, season, episode) {
 
   if (!playlist) throw new Error('No playlist found');
 
-  console.log('🎬 Playlist URL:', playlist);
-
+  console.log('🎬 Playlist:', playlist);
   return playlist;
 }
 
-// ── Fetch upstream ────────────────────────────────────────────────────────────
+// ── UPSTREAM FETCH ────────────────────────────────────────
 function fetchUpstream(url, redirects = 0) {
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject(new Error('Too many redirects'));
@@ -85,8 +84,7 @@ function fetchUpstream(url, redirects = 0) {
       }
     }, res => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        const loc = res.headers.location;
-        const next = loc.startsWith('http') ? loc : new URL(loc, url).href;
+        const next = new URL(res.headers.location, url).href;
         return resolve(fetchUpstream(next, redirects + 1));
       }
       resolve(res);
@@ -96,31 +94,37 @@ function fetchUpstream(url, redirects = 0) {
   });
 }
 
-// ── Rewrite playlist (SAFE) ───────────────────────────────────────────────────
+// ── SMART M3U8 REWRITE (FIXED) ────────────────────────────
 function rewriteM3u8(body, url) {
-  const base = url.split('?')[0];
-  const baseDir = base.substring(0, base.lastIndexOf('/') + 1);
-  const origin = new URL(url).origin;
+  const realUrl = new URL(url).searchParams.get('url') || url;
+  const isMaster = body.includes('#EXT-X-STREAM-INF');
 
   return body.split('\n').map(line => {
     const t = line.trim();
 
+    // keep comments
     if (!t || t.startsWith('#')) return line;
 
-    const abs = t.startsWith('http')
-      ? t
-      : t.startsWith('/')
-      ? origin + t
-      : baseDir + t;
+    const abs = new URL(t, realUrl).href;
 
-    return '/api?url=' + encodeURIComponent(abs);
+    // MASTER playlist → only rewrite variant playlists
+    if (isMaster && abs.includes('.m3u8')) {
+      return '/api?url=' + encodeURIComponent(abs);
+    }
+
+    // MEDIA playlist → rewrite TS segments
+    if (!isMaster) {
+      return '/api?url=' + encodeURIComponent(abs);
+    }
+
+    return line;
   }).join('\n');
 }
 
-// ── Handler ───────────────────────────────────────────────────────────────────
+// ── MAIN HANDLER ──────────────────────────────────────────
 module.exports = async function handler(req, res) {
 
-  // ✅ CORS FIX
+  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', '*');
@@ -134,7 +138,7 @@ module.exports = async function handler(req, res) {
   const { searchParams } = new URL(req.url, 'http://localhost');
   const q = Object.fromEntries(searchParams);
 
-  // ── PROXY MODE ──────────────────────────────────────────────────────────────
+  // ── PROXY MODE ─────────────────────────────────────────
   if (q.url) {
     const url = decodeURIComponent(q.url);
 
@@ -145,16 +149,15 @@ module.exports = async function handler(req, res) {
       const isM3u8 =
         ct.includes('mpegurl') ||
         ct.includes('m3u8') ||
-        /\.m3u8?(\?|$)/i.test(url.split('?')[0]);
+        /\.m3u8/i.test(url.split('?')[0]);
 
       if (isM3u8) {
         const chunks = [];
-        for await (const chunk of upstream) chunks.push(chunk);
+        for await (const c of upstream) chunks.push(c);
 
         const body = Buffer.concat(chunks).toString('utf8');
 
-        console.log('📄 Playlist Preview:\n', body.substring(0, 300));
-        console.log('🎯 Is Master:', body.includes('#EXT-X-STREAM-INF'));
+        console.log('📄 TYPE:', body.includes('#EXT-X-STREAM-INF') ? 'MASTER' : 'MEDIA');
 
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
         res.setHeader('Cache-Control', 'no-store');
@@ -162,8 +165,11 @@ module.exports = async function handler(req, res) {
         return res.end(rewriteM3u8(body, url));
       }
 
-      // Non-m3u8 (TS segments)
+      // TS / media files
       res.setHeader('Content-Type', ct || 'application/octet-stream');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Accept-Ranges', 'bytes');
+
       if (upstream.headers['content-length']) {
         res.setHeader('Content-Length', upstream.headers['content-length']);
       }
@@ -177,7 +183,7 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  // ── STREAM FETCH ────────────────────────────────────────────────────────────
+  // ── STREAM FETCH ────────────────────────────────────────
   if (!q.id) {
     res.statusCode = 400;
     return res.end(JSON.stringify({ error: 'Missing id' }));
@@ -190,7 +196,7 @@ module.exports = async function handler(req, res) {
       const upstream = await fetchUpstream(streamUrl);
 
       const chunks = [];
-      for await (const chunk of upstream) chunks.push(chunk);
+      for await (const c of upstream) chunks.push(c);
 
       const body = Buffer.concat(chunks).toString('utf8');
 
@@ -199,10 +205,10 @@ module.exports = async function handler(req, res) {
     }
 
     res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ url: streamUrl }));
+    return res.end(JSON.stringify({ url: streamUrl }));
 
   } catch (err) {
     res.statusCode = 500;
-    res.end(JSON.stringify({ error: err.message }));
+    return res.end(JSON.stringify({ error: err.message }));
   }
 };
