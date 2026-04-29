@@ -2,6 +2,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
+const http = require('http');
 
 const REFERER = 'https://vidlink.pro/';
 const ORIGIN  = 'https://vidlink.pro';
@@ -24,9 +26,8 @@ function bootWasm() {
 
     eval(fs.readFileSync(path.join(__dirname, 'script.js'), 'utf8'));
 
-    // FIX: safe Dm access
     const DmClass = globalThis.Dm || globalThis.DmClass;
-    if (!DmClass) throw new Error('Dm is not defined');
+    if (!DmClass) throw new Error('Dm not found');
 
     const go = new DmClass();
 
@@ -45,12 +46,12 @@ function bootWasm() {
   return bootPromise;
 }
 
-// ── GET STREAM URL ────────────────────────────────────────
+// ── GET STREAM ────────────────────────────────────────────
 async function getStream(id, season, episode) {
   await bootWasm();
 
   const token = globalThis.getAdv(String(id));
-  if (!token) throw new Error('Token generation failed');
+  if (!token) throw new Error('Token failed');
 
   const apiUrl = season
     ? `https://vidlink.pro/api/b/tv/${token}/${season}/${episode || 1}?multiLang=1`
@@ -64,53 +65,106 @@ async function getStream(id, season, episode) {
     }
   });
 
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
-
   const data = await res.json();
-  const playlist = data?.stream?.playlist;
-
-  if (!playlist) throw new Error('No playlist found');
-
-  console.log('🎬 Stream URL:', playlist);
-
-  return playlist;
+  return data?.stream?.playlist;
 }
 
-// ── MAIN HANDLER ──────────────────────────────────────────
+// ── FETCH UPSTREAM ────────────────────────────────────────
+function fetchUpstream(url, redirects = 0) {
+  return new Promise((resolve, reject) => {
+    if (redirects > 5) return reject('Too many redirects');
+
+    const client = url.startsWith('https') ? https : http;
+
+    const req = client.get(url, {
+      headers: {
+        Referer: REFERER,
+        Origin: ORIGIN,
+        'User-Agent': UA
+      }
+    }, res => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        const next = new URL(res.headers.location, url).href;
+        return resolve(fetchUpstream(next, redirects + 1));
+      }
+      resolve(res);
+    });
+
+    req.on('error', reject);
+  });
+}
+
+// ── SMART REWRITE ─────────────────────────────────────────
+function rewriteM3u8(body, url) {
+  const realUrl = new URL(url).searchParams.get('url') || url;
+
+  return body.split('\n').map(line => {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) return line;
+
+    const abs = new URL(t, realUrl).href;
+
+    return '/api?url=' + encodeURIComponent(abs);
+  }).join('\n');
+}
+
+// ── HANDLER ───────────────────────────────────────────────
 module.exports = async function handler(req, res) {
 
-  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', '*');
-
-  if (req.method === 'OPTIONS') {
-    res.statusCode = 200;
-    return res.end();
-  }
 
   const { searchParams } = new URL(req.url, 'http://localhost');
   const q = Object.fromEntries(searchParams);
 
-  // ── STREAM MODE ─────────────────────────────────────────
-  if (!q.id) {
-    res.statusCode = 400;
-    return res.end('Missing id');
+  // ── STREAM ENTRY ───────────────────────────────────────
+  if (q.id) {
+    try {
+      const streamUrl = await getStream(q.id, q.s, q.e);
+
+      // ✅ IMPORTANT: return PROXY URL, NOT redirect
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(JSON.stringify({
+        url: '/api?url=' + encodeURIComponent(streamUrl)
+      }));
+
+    } catch (e) {
+      res.statusCode = 500;
+      return res.end(e.message);
+    }
   }
 
-  try {
-    const streamUrl = await getStream(q.id, q.s, q.e);
+  // ── PROXY MODE ─────────────────────────────────────────
+  if (q.url) {
+    const url = decodeURIComponent(q.url);
 
-    // 🔥 IMPORTANT: REDIRECT TO ACTUAL STREAM
-    res.writeHead(302, {
-      Location: streamUrl,
-      'Cache-Control': 'no-store'
-    });
+    try {
+      const upstream = await fetchUpstream(url);
 
-    return res.end();
+      const ct = upstream.headers['content-type'] || '';
+      const isM3u8 = ct.includes('mpegurl') || url.includes('.m3u8');
 
-  } catch (err) {
-    res.statusCode = 500;
-    return res.end(err.message);
+      if (isM3u8) {
+        const chunks = [];
+        for await (const c of upstream) chunks.push(c);
+
+        const body = Buffer.concat(chunks).toString('utf8');
+
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        res.setHeader('Cache-Control', 'no-store');
+
+        return res.end(rewriteM3u8(body, url));
+      }
+
+      res.setHeader('Content-Type', ct);
+      return upstream.pipe(res);
+
+    } catch (e) {
+      res.statusCode = 502;
+      return res.end(e.message);
+    }
   }
+
+  res.statusCode = 400;
+  res.end('Invalid request');
 };
