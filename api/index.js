@@ -127,6 +127,34 @@ module.exports = async function handler(req, res) {
     return res.end(JSON.stringify({ error: 'missing id' }));
   }
 
+  // Check if client wants direct stream (proxy mode)
+  if (q.proxy === 'true') {
+    try {
+      const streamUrl = await getStream(q.id, q.s, q.e);
+      // Serve the stream content directly
+      const upstream = await fetchUpstream(streamUrl);
+      const ct = (upstream.headers['content-type'] || '').toLowerCase();
+      const isM3u8 = ct.includes('mpegurl') || ct.includes('m3u8') || /\.m3u8?(\?|$)/i.test(streamUrl.split('?')[0]);
+
+      if (isM3u8) {
+        const chunks = [];
+        for await (const chunk of upstream) chunks.push(chunk);
+        const body = Buffer.concat(chunks).toString('utf8');
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        return res.end(rewriteM3u8(body, streamUrl));
+      } else {
+        res.setHeader('Content-Type', ct || 'application/octet-stream');
+        if (upstream.headers['content-length']) res.setHeader('Content-Length', upstream.headers['content-length']);
+        res.statusCode = upstream.statusCode;
+        return upstream.pipe(res);
+      }
+    } catch (err) {
+      res.statusCode = 502;
+      return res.end(err.message);
+    }
+  }
+
+  // Default: return JSON with URL
   res.setHeader('Content-Type', 'application/json');
   try {
     const url = await getStream(q.id, q.s, q.e);
